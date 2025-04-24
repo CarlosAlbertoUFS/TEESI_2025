@@ -1,5 +1,5 @@
 streamlit==1.31.0
-langchain==0.1.0
+langchain==0.3.24
 python-docx==1.1.0
 pypdf==4.0.2
 sentence-transformers
@@ -9,3 +9,7 @@ watchdog==3.0.0
 ipykernel==6.29.0
 jupyter==1.0.0
 notebook==7.0.7
+huggingface_hub==0.23.0
+langchain-community
+langchain-huggingface==0.1.2
+langchain_openai
