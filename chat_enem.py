@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import json
 from langchain.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.embeddings import HuggingFaceEmbeddings
@@ -10,14 +11,93 @@ from langchain.llms import HuggingFaceHub
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 from langchain.llms.base import LLM
-from typing import Optional, List
-from pydantic import PrivateAttr
+from typing import Optional, List, Dict
+from pydantic import PrivateAttr, BaseModel
 from langchain.callbacks import StreamlitCallbackHandler
 from langchain.retrievers.document_compressors import EmbeddingsFilter
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain.chat_models import init_chat_model
 from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
+
+# Classes para implementação dos Agents
+class AgentItem:
+    def __init__(self, area: str, dataset_path: str):
+        self.area = area
+        self.dataset_path = dataset_path
+        self.questions = self._load_questions()
+        self.llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.7)
+    
+    def _load_questions(self) -> List[Dict]:
+        with open(self.dataset_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    def get_question(self, topic: str = None) -> Dict:
+        """Retorna uma questão aleatória ou relacionada ao tópico especificado"""
+        if topic:
+            relevant_questions = [q for q in self.questions if topic.lower() in q['enunciado'].lower()]
+            if relevant_questions:
+                return relevant_questions[0]
+        return self.questions[0] if self.questions else None
+
+class RecommenderAgent:
+    def __init__(self):
+        self.agents = {
+            "linguagens": AgentItem("linguagens, códigos e suas tecnologias", "data_agent_1/enem_questoes.json"),
+            "humanas": AgentItem("ciências humanas e suas tecnologias", "data_agent_2/enem_questoes.json"),
+            "natureza": AgentItem("ciências da natureza e suas tecnologias", "data_agent_3/enem_questoes.json"),
+            "matematica": AgentItem("matemática e suas tecnologias", "data_agent_4/enem_questoes.json")
+        }
+        self.llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.3)
+    
+    def identify_area(self, query: str) -> str:
+        areas = {
+            "linguagens": ["linguagem", "português", "inglês", "espanhol", "literatura", "artes", "educação física"],
+            "humanas": ["história", "geografia", "filosofia", "sociologia"],
+            "natureza": ["física", "química", "biologia"],
+            "matematica": ["matemática", "geometria", "álgebra"]
+        }
+        
+        query = query.lower()
+        
+        # Primeiro, tentar identificar por palavras-chave
+        st.write("📚 Procurando palavras-chave relacionadas às áreas do ENEM...")
+        for area, keywords in areas.items():
+            if any(keyword in query for keyword in keywords):
+                st.write(f"🔍 Encontrei palavras-chave relacionadas à área de {area}")
+                return area
+        
+        # Se não encontrar área específica, usar o LLM para classificar
+        st.write("🤖 Usando IA para classificar a área mais apropriada...")
+        prompt = f"""
+        Classifique a seguinte pergunta em uma das áreas do ENEM:
+        Pergunta: {query}
+        Áreas possíveis: linguagens, humanas, natureza, matematica
+        Responda apenas com o nome da área mais apropriada.
+        """
+        response = self.llm.predict(prompt)
+        return response.strip().lower()
+    
+    def get_response(self, query: str) -> str:
+        # Passo 1: Identificar a área
+        st.write("🤔 Analisando sua pergunta para identificar a área de conhecimento...")
+        area = self.identify_area(query)
+        st.write(f"✨ Área identificada: {area}")
+        
+        # Passo 2: Selecionar o Agent Item
+        agent_item = self.agents.get(area)
+        if not agent_item:
+            return "❌ Desculpe, não consegui identificar a área de conhecimento da sua pergunta."
+        
+        st.write(f"🎯 Consultando o Agent Item especializado em {agent_item.area}...")
+        
+        # Passo 3: Buscar a questão
+        question = agent_item.get_question()
+        if not question:
+            return f"❌ Desculpe, não encontrei questões disponíveis para a área de {agent_item.area}."
+        
+        st.write("✅ Questão encontrada!")
+        return f"📝 Aqui está uma questão da área de {agent_item.area}:\n\n{question['enunciado']}"
 
 # Configuração da página
 st.set_page_config(
@@ -166,33 +246,40 @@ with st.sidebar:
                 else:
                     st.error("Não foi possível processar os documentos.")
 
+# Inicializar o Recommender Agent
+if "recommender_agent" not in st.session_state:
+    st.session_state.recommender_agent = RecommenderAgent()
+
 # Área principal para o chat
-if st.session_state.processed_files:
-    chat_container = st.container()
+chat_container = st.container()
 
-    with chat_container:
-        for message in st.session_state.chat_history:
-            if isinstance(message, dict):
-                role = "user" if "human" in message else "assistant"
-                content = message.get("human", message.get("ai", ""))
-            else:
-                continue
-            with st.chat_message(role):
-                st.write(content)
+with chat_container:
+    for message in st.session_state.chat_history:
+        if isinstance(message, dict):
+            role = "user" if "human" in message else "assistant"
+            content = message.get("human", message.get("ai", ""))
+        else:
+            continue
+        with st.chat_message(role):
+            st.write(content)
 
-    user_question = st.chat_input("Digite sua pergunta sobre os documentos")
+user_question = st.chat_input("Digite sua pergunta ou peça uma questão específica de uma área do ENEM")
 
-    if user_question:
-        st.session_state.chat_history.append({"human": user_question})
-        with st.chat_message("user"):
-            st.write(user_question)
-        # Gerar e mostrar resposta
-        with st.chat_message("assistant"):
-            with st.spinner("Pensando..."):
+if user_question:
+    st.session_state.chat_history.append({"human": user_question})
+    with st.chat_message("user"):
+        st.write(user_question)
+    
+    # Gerar e mostrar resposta usando o Recommender Agent
+    with st.chat_message("assistant"):
+        with st.spinner("Pensando..."):
+            # Se o usuário tiver carregado documentos, usar a conversa normal
+            if st.session_state.processed_files:
                 response = st.session_state.conversation({'question': user_question})
-                answer = response.get('answer', 'Desculpe, não consegui gerar uma resposta.')  # Extrair apenas a resposta
-                st.write(answer)
-                st.session_state.chat_history.append({"ai": answer})
-
-else:
-    st.info("👈 Por favor, faça upload e processe seus documentos para começar a conversar.")
+                answer = response.get('answer', 'Desculpe, não consegui gerar uma resposta.')
+            # Caso contrário, usar o Recommender Agent
+            else:
+                answer = st.session_state.recommender_agent.get_response(user_question)
+            
+            st.write(answer)
+            st.session_state.chat_history.append({"ai": answer})
